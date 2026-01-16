@@ -14,12 +14,16 @@ LOG_INTERVAL = 30  # Log successful updates every 30 cycles (~1 minute)
 AUTO_DISCOVER_INTERVAL = 60  # Re-discover VMs every 60 cycles (~2 minutes)
 DEFAULT_MAX_CONCURRENT = 5  # Default concurrent VM queries (configurable)
 QMP_TIMEOUT = 10  # Timeout for QMP socket operations
+QEMUSERVER_PM = "/usr/share/perl5/PVE/QemuServer.pm"
+PATCH_CHECK_INTERVAL = 300  # Check patch every 300 cycles (~10 minutes)
 
 # Track last known state for change detection
 _vm_status = {}  # vmid -> {'success': bool, 'mem': int}
 _cycle_count = 0
 _discovered_vms = {}  # vmid -> {'type': str, 'last_check': int}
 _local_node = None  # Cached local node name
+_patch_warned = False  # Track if we've warned about missing patch
+_last_patch_check = 0  # Last cycle we checked patch
 
 def log(msg):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -34,6 +38,73 @@ def get_local_node():
         return _local_node
     except:
         return "localhost"
+
+
+def check_patch_applied():
+    """
+    Check if the proxmox-rmem patch is applied to QemuServer.pm.
+    Returns True if patch is present, False otherwise.
+    """
+    try:
+        with open(QEMUSERVER_PM, 'r') as f:
+            content = f.read()
+        return 'proxmox-rmem' in content
+    except Exception as e:
+        log(f"Warning: Could not read {QEMUSERVER_PM}: {e}")
+        return None  # Unknown state
+
+
+def verify_patch_on_startup():
+    """
+    Verify patch is applied on service startup.
+    Logs a prominent warning if missing.
+    """
+    global _patch_warned
+    
+    patch_status = check_patch_applied()
+    
+    if patch_status is False:
+        log("=" * 70)
+        log("WARNING: Proxmox patch is MISSING!")
+        log("Memory overrides will NOT be displayed in the Proxmox UI.")
+        log("This typically happens after a Proxmox package update.")
+        log("")
+        log("To re-apply the patch, run:")
+        log('  FORCE_INSTALL=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/IT-BAER/proxmox-rmem/main/install.sh)"')
+        log("=" * 70)
+        _patch_warned = True
+        return False
+    elif patch_status is True:
+        log("Patch verification: OK - QemuServer.pm is patched")
+        _patch_warned = False
+        return True
+    else:
+        log("Patch verification: Could not verify patch status")
+        return None
+
+
+def periodic_patch_check():
+    """
+    Periodic check for patch presence during runtime.
+    Only warns once per missing state until patch is restored.
+    """
+    global _patch_warned, _last_patch_check, _cycle_count
+    
+    # Only check every PATCH_CHECK_INTERVAL cycles
+    if (_cycle_count - _last_patch_check) < PATCH_CHECK_INTERVAL:
+        return
+    
+    _last_patch_check = _cycle_count
+    patch_status = check_patch_applied()
+    
+    if patch_status is False and not _patch_warned:
+        log("WARNING: Proxmox patch has been removed! Memory overrides will not display in UI.")
+        log("Re-run installer: FORCE_INSTALL=1 bash -c \"$(curl -fsSL https://raw.githubusercontent.com/IT-BAER/proxmox-rmem/main/install.sh)\"")
+        _patch_warned = True
+    elif patch_status is True and _patch_warned:
+        log("Patch restored: QemuServer.pm is now patched correctly")
+        _patch_warned = False
+
 
 # ============================================================================
 # Direct QMP Socket Communication (bypasses Perl, low memory footprint)
@@ -464,6 +535,9 @@ def main():
     log(f"Config file: {CONFIG_FILE}")
     log("Config is reloaded every cycle - no restart needed after editing config.json")
     
+    # Verify patch on startup
+    verify_patch_on_startup()
+    
     auto_mode = False
     last_discover_cycle = -AUTO_DISCOVER_INTERVAL  # Force discovery on first run
     
@@ -544,6 +618,8 @@ def main():
             _cycle_count += 1
             if _cycle_count >= LOG_INTERVAL:
                 cleanup_stale_overrides(active_vmids)
+                # Periodically verify the patch is still in place
+                periodic_patch_check()
                 # Don't reset cycle count, we need it for discovery interval
                 if _cycle_count >= LOG_INTERVAL * 100:  # Prevent overflow
                     _cycle_count = LOG_INTERVAL
