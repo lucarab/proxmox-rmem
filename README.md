@@ -100,7 +100,8 @@ Combine auto-discovery with explicit configuration for special cases:
       "vmid": 101,
       "type": "bsd",
       "ip": "10.10.10.1",
-      "method": "ssh"
+      "method": "ssh",
+      "user": "admin"
     },
     {
       "vmid": 999,
@@ -151,6 +152,7 @@ For full control, list each VM explicitly:
 | `method` | ❌ | `qga` (auto) / `ssh` (manual) | `ssh` or `qga` |
 | `ip` | ⚠️ | - | Required for SSH method |
 | `port` | ❌ | `22` | SSH port |
+| `user` | ❌ | `root` | SSH username to connect with (useful if root is disabled) |
 | `ssh_key` | ❌ | `/etc/proxmox-rmem/id_rsa_monitor` | SSH private key path |
 | `enabled` | ❌ | `true` | Enable/disable this VM |
 
